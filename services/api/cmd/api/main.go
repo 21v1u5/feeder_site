@@ -9,6 +9,7 @@ import (
 
 	"github.com/21v1u5/feeder_site/services/api/internal/config"
 	"github.com/21v1u5/feeder_site/services/api/internal/ingestion"
+	"github.com/21v1u5/feeder_site/services/api/internal/postgres"
 	"github.com/21v1u5/feeder_site/services/api/internal/profile"
 	"github.com/21v1u5/feeder_site/services/api/internal/ratelimit"
 	"github.com/21v1u5/feeder_site/services/api/internal/riot"
@@ -37,13 +38,23 @@ func main() {
 	riotClient := riot.NewClient(cfg.RiotAPIKey, limiter)
 	profileService := profile.NewService(riotClient)
 
+	db, err := postgres.Open(cfg.PostgresURL)
+	if err != nil {
+		log.Fatalf("connecting to Postgres: %v", err)
+	}
+	defer db.Close()
+	if err := postgres.Migrate(db); err != nil {
+		log.Fatalf("running Postgres migrations: %v", err)
+	}
+	store := postgres.NewStore(db)
+
 	ingestionQueue, err := ingestion.Dial(cfg.RabbitMQURL)
 	if err != nil {
 		log.Fatalf("connecting to RabbitMQ: %v", err)
 	}
 	defer ingestionQueue.Close()
 
-	ingestionWorker := ingestion.NewWorker(riotClient, ingestion.LoggingStore{})
+	ingestionWorker := ingestion.NewWorker(riotClient, store)
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	go func() {
@@ -91,7 +102,7 @@ func main() {
 		}
 
 		if region, err := riot.PlatformToRegion(platform); err == nil {
-			go enqueueMatchIngestion(ingestionQueue, region, p.RecentMatchIDs)
+			go persistAccountAndEnqueueMatches(store, ingestionQueue, platform, region, p)
 		}
 
 		c.JSON(http.StatusOK, p)
@@ -104,14 +115,30 @@ func main() {
 	}
 }
 
-// enqueueMatchIngestion publishes one ingestion job per match id. It runs
-// detached from the HTTP request (own background context with a timeout)
-// since the request is already done by the time this executes.
-func enqueueMatchIngestion(queue *ingestion.Queue, region string, matchIDs []string) {
+// persistAccountAndEnqueueMatches upserts the account/summoner snapshot and
+// publishes one ingestion job per recent match id. It runs detached from
+// the HTTP request (own background context with a timeout) since the
+// request is already done by the time this executes.
+func persistAccountAndEnqueueMatches(store *postgres.Store, queue *ingestion.Queue, platform, region string, p *profile.Profile) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	for _, matchID := range matchIDs {
+	if p.Summoner != nil {
+		account := postgres.AccountRecord{
+			PUUID:         p.Account.PUUID,
+			GameName:      p.Account.GameName,
+			TagLine:       p.Account.TagLine,
+			Platform:      platform,
+			Region:        region,
+			ProfileIconID: p.Summoner.ProfileIconID,
+			SummonerLevel: p.Summoner.SummonerLevel,
+		}
+		if err := store.UpsertAccount(ctx, account); err != nil {
+			log.Printf("persisting account %s: %v", p.Account.PUUID, err)
+		}
+	}
+
+	for _, matchID := range p.RecentMatchIDs {
 		job := ingestion.MatchJob{Region: region, MatchID: matchID}
 		if err := queue.Publish(ctx, job); err != nil {
 			log.Printf("enqueue match ingestion for %s failed: %v", matchID, err)
