@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/21v1u5/feeder_site/services/api/internal/config"
+	"github.com/21v1u5/feeder_site/services/api/internal/profile"
 	"github.com/21v1u5/feeder_site/services/api/internal/ratelimit"
 	"github.com/21v1u5/feeder_site/services/api/internal/riot"
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,7 @@ func main() {
 	limiter := ratelimit.New(rdb, "riot-rl", windows)
 
 	riotClient := riot.NewClient(cfg.RiotAPIKey, limiter)
+	profileService := profile.NewService(riotClient)
 
 	router := gin.Default()
 
@@ -37,8 +39,6 @@ func main() {
 	})
 
 	// Manual smoke-test endpoint for the Riot client + rate limiter wiring.
-	// The fan-out/fan-in profile endpoint (summoner + league + matches) lands
-	// in a later stage.
 	router.GET("/riot/account/:region/:gameName/:tagLine", func(c *gin.Context) {
 		account, err := riotClient.GetAccountByRiotID(
 			c.Request.Context(),
@@ -47,21 +47,42 @@ func main() {
 			c.Param("tagLine"),
 		)
 		if err != nil {
-			status := http.StatusBadGateway
-			if errors.Is(err, riot.ErrNotFound) {
-				status = http.StatusNotFound
-			} else if errors.Is(err, riot.ErrRateLimited) {
-				status = http.StatusTooManyRequests
-			}
-			c.JSON(status, gin.H{"error": err.Error()})
+			c.JSON(riotErrorStatus(err), gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusOK, account)
+	})
+
+	// Fan-out/fan-in profile lookup: resolves the Riot ID and fetches
+	// summoner, league and recent match data concurrently.
+	router.GET("/api/profiles/:platform/:gameName/:tagLine", func(c *gin.Context) {
+		p, err := profileService.GetProfile(
+			c.Request.Context(),
+			c.Param("platform"),
+			c.Param("gameName"),
+			c.Param("tagLine"),
+		)
+		if err != nil {
+			c.JSON(riotErrorStatus(err), gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, p)
 	})
 
 	addr := ":" + cfg.Port
 	log.Printf("feeder-site api listening on %s", addr)
 	if err := router.Run(addr); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func riotErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, riot.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, riot.ErrRateLimited):
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusBadGateway
 	}
 }
