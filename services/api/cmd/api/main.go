@@ -10,10 +10,12 @@ import (
 	"github.com/21v1u5/feeder_site/services/api/internal/ratelimit"
 	"github.com/21v1u5/feeder_site/services/api/internal/riot"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
+	loadDotEnv()
 	cfg := config.Load()
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
@@ -74,6 +76,21 @@ func main() {
 	if err := router.Run(addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// loadDotEnv loads a .env file if one is found, checking the current
+// directory first (docker/systemd deployments typically run from the repo
+// root) and then one level up (covers `cd services/api && go run ./cmd/api`
+// with a .env kept at the repo root). Missing files are not an error: in
+// production the environment is usually injected directly.
+func loadDotEnv() {
+	if err := godotenv.Load(".env"); err == nil {
+		return
+	}
+	if err := godotenv.Load("../.env"); err == nil {
+		return
+	}
+	log.Println("no .env file found, relying on process environment")
 }
 
 func riotErrorStatus(err error) int {
