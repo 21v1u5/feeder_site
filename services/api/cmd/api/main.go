@@ -114,6 +114,28 @@ func main() {
 		c.JSON(http.StatusOK, p)
 	})
 
+	// Match history already ingested for this player. Populated
+	// asynchronously by the ingestion workers, so a just-looked-up profile
+	// may show nothing here yet.
+	router.GET("/api/accounts/:puuid/matches", func(c *gin.Context) {
+		limit := 20
+		if raw := c.Query("limit"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				limit = n
+			}
+		}
+
+		matches, err := store.MatchHistoryByPUUID(c.Request.Context(), c.Param("puuid"), limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if matches == nil {
+			matches = []postgres.MatchSummary{}
+		}
+		c.JSON(http.StatusOK, gin.H{"matches": matches})
+	})
+
 	// Tier list: reads the pre-aggregated materialized view rather than
 	// scanning match_participants live. ?patch defaults to the most
 	// recently ingested patch, ?minGames filters out low-sample outliers.
@@ -148,6 +170,9 @@ func main() {
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
+		}
+		if stats == nil {
+			stats = []postgres.ChampionStat{}
 		}
 		c.JSON(http.StatusOK, gin.H{"patch": patch, "champions": stats})
 	})

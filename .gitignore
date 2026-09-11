@@ -7,6 +7,8 @@ services/api/vendor/
 apps/web/node_modules/
 apps/web/.next/
 apps/web/out/
+apps/web/*.tsbuildinfo
+apps/web/next-env.d.ts
 
 # Env
 .env

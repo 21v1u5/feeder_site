@@ -32,7 +32,7 @@ estatísticas rodando em background.
 ```
 feeder_site/
 ├── apps/
-│   └── web/          # Frontend Next.js (a ser criado)
+│   └── web/           # Frontend Next.js
 ├── services/
 │   └── api/           # Backend Go (Gin)
 ├── infra/              # Configs de Traefik, migrations, etc.
@@ -47,7 +47,7 @@ feeder_site/
 - [x] Etapa 4 — Worker pool de ingestão de partidas via RabbitMQ
 - [x] Etapa 5 — Modelagem do PostgreSQL (contas, partidas, participantes) + migrations
 - [x] Etapa 6 — Materialized views e job noturno de tier list
-- [ ] Etapa 7 — Frontend Next.js (perfil, histórico, tier list)
+- [x] Etapa 7 — Frontend Next.js (perfil, histórico, tier list)
 - [ ] Etapa 8 — Infra de produção (Traefik, Cloudflare, deploy)
 
 ## Desenvolvimento local
@@ -56,4 +56,13 @@ feeder_site/
 docker compose up -d          # sobe Postgres, Redis e RabbitMQ
 cd services/api
 go run ./cmd/api               # sobe a API em :8080
+```
+
+Frontend (em outro terminal):
+
+```bash
+cd apps/web
+cp .env.example .env           # API_BASE_URL aponta pra API acima
+npm install
+npm run dev                    # http://localhost:3000
 ```
