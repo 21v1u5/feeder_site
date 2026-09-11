@@ -42,7 +42,7 @@ feeder_site/
 ## Roadmap (etapas de desenvolvimento)
 
 - [x] Etapa 1 — Scaffold do monorepo, docker-compose e esqueleto do backend Go
-- [ ] Etapa 2 — Cliente da Riot API + rate limiter centralizado (Redis)
+- [x] Etapa 2 — Cliente da Riot API + rate limiter centralizado (Redis)
 - [ ] Etapa 3 — Endpoint de busca de perfil (fan-out/fan-in: Summoner + League + Match)
 - [ ] Etapa 4 — Worker pool de ingestão de partidas via RabbitMQ
 - [ ] Etapa 5 — Modelagem do PostgreSQL (contas, partidas, participantes) + migrations
