@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/21v1u5/feeder_site/services/api/internal/config"
@@ -63,6 +64,11 @@ func main() {
 		}
 	}()
 
+	// Consolidation job: periodically recompute the champion_stats_by_patch
+	// materialized view the tier list reads from, instead of aggregating
+	// millions of match_participants rows on every request.
+	go runTierListRefreshLoop(workerCtx, store, cfg.TierListRefreshPeriod)
+
 	router := gin.Default()
 
 	router.GET("/health", func(c *gin.Context) {
@@ -108,6 +114,55 @@ func main() {
 		c.JSON(http.StatusOK, p)
 	})
 
+	// Tier list: reads the pre-aggregated materialized view rather than
+	// scanning match_participants live. ?patch defaults to the most
+	// recently ingested patch, ?minGames filters out low-sample outliers.
+	router.GET("/api/tier-list", func(c *gin.Context) {
+		queueID, err := strconv.Atoi(c.Query("queueId"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "queueId query param is required and must be an integer"})
+			return
+		}
+
+		patch := c.Query("patch")
+		if patch == "" {
+			patch, err = store.LatestPatch(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if patch == "" {
+				c.JSON(http.StatusOK, gin.H{"patch": "", "champions": []postgres.ChampionStat{}})
+				return
+			}
+		}
+
+		minGames := 10
+		if raw := c.Query("minGames"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil {
+				minGames = n
+			}
+		}
+
+		stats, err := store.TierList(c.Request.Context(), queueID, patch, minGames)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"patch": patch, "champions": stats})
+	})
+
+	// Manual trigger for the consolidation job, mainly for ops/testing so
+	// nobody has to wait for the next scheduled refresh. Needs to sit
+	// behind the reverse proxy's access control once that's in place.
+	router.POST("/internal/tier-list/refresh", func(c *gin.Context) {
+		if err := store.RefreshChampionStats(c.Request.Context()); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "refreshed"})
+	})
+
 	addr := ":" + cfg.Port
 	log.Printf("feeder-site api listening on %s", addr)
 	if err := router.Run(addr); err != nil {
@@ -142,6 +197,31 @@ func persistAccountAndEnqueueMatches(store *postgres.Store, queue *ingestion.Que
 		job := ingestion.MatchJob{Region: region, MatchID: matchID}
 		if err := queue.Publish(ctx, job); err != nil {
 			log.Printf("enqueue match ingestion for %s failed: %v", matchID, err)
+		}
+	}
+}
+
+// runTierListRefreshLoop recomputes the champion stats materialized view
+// on a fixed period until ctx is canceled. It also refreshes once at
+// startup so a freshly deployed instance doesn't serve an empty tier list
+// for a full period.
+func runTierListRefreshLoop(ctx context.Context, store *postgres.Store, period time.Duration) {
+	refresh := func() {
+		if err := store.RefreshChampionStats(ctx); err != nil {
+			log.Printf("tier list refresh failed: %v", err)
+		}
+	}
+
+	refresh()
+
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
 		}
 	}
 }
