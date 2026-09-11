@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/21v1u5/feeder_site/services/api/internal/config"
+	"github.com/21v1u5/feeder_site/services/api/internal/ingestion"
 	"github.com/21v1u5/feeder_site/services/api/internal/profile"
 	"github.com/21v1u5/feeder_site/services/api/internal/ratelimit"
 	"github.com/21v1u5/feeder_site/services/api/internal/riot"
@@ -34,6 +37,21 @@ func main() {
 	riotClient := riot.NewClient(cfg.RiotAPIKey, limiter)
 	profileService := profile.NewService(riotClient)
 
+	ingestionQueue, err := ingestion.Dial(cfg.RabbitMQURL)
+	if err != nil {
+		log.Fatalf("connecting to RabbitMQ: %v", err)
+	}
+	defer ingestionQueue.Close()
+
+	ingestionWorker := ingestion.NewWorker(riotClient, ingestion.LoggingStore{})
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	go func() {
+		if err := ingestionQueue.Consume(workerCtx, cfg.IngestionWorkers, ingestionWorker.HandleJob); err != nil {
+			log.Printf("ingestion consumer stopped: %v", err)
+		}
+	}()
+
 	router := gin.Default()
 
 	router.GET("/health", func(c *gin.Context) {
@@ -56,11 +74,14 @@ func main() {
 	})
 
 	// Fan-out/fan-in profile lookup: resolves the Riot ID and fetches
-	// summoner, league and recent match data concurrently.
+	// summoner, league and recent match data concurrently. Full match
+	// details are enqueued for background ingestion rather than fetched
+	// inline, so the response stays fast regardless of history size.
 	router.GET("/api/profiles/:platform/:gameName/:tagLine", func(c *gin.Context) {
+		platform := c.Param("platform")
 		p, err := profileService.GetProfile(
 			c.Request.Context(),
-			c.Param("platform"),
+			platform,
 			c.Param("gameName"),
 			c.Param("tagLine"),
 		)
@@ -68,6 +89,11 @@ func main() {
 			c.JSON(riotErrorStatus(err), gin.H{"error": err.Error()})
 			return
 		}
+
+		if region, err := riot.PlatformToRegion(platform); err == nil {
+			go enqueueMatchIngestion(ingestionQueue, region, p.RecentMatchIDs)
+		}
+
 		c.JSON(http.StatusOK, p)
 	})
 
@@ -75,6 +101,21 @@ func main() {
 	log.Printf("feeder-site api listening on %s", addr)
 	if err := router.Run(addr); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// enqueueMatchIngestion publishes one ingestion job per match id. It runs
+// detached from the HTTP request (own background context with a timeout)
+// since the request is already done by the time this executes.
+func enqueueMatchIngestion(queue *ingestion.Queue, region string, matchIDs []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, matchID := range matchIDs {
+		job := ingestion.MatchJob{Region: region, MatchID: matchID}
+		if err := queue.Publish(ctx, job); err != nil {
+			log.Printf("enqueue match ingestion for %s failed: %v", matchID, err)
+		}
 	}
 }
 
