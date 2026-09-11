@@ -1,0 +1,22 @@
+# Go
+services/api/bin/
+services/api/*.exe
+services/api/vendor/
+
+# Node / Next.js
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
