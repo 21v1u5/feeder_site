@@ -80,14 +80,15 @@ func main() {
 
 // loadDotEnv loads a .env file if one is found, checking the current
 // directory first (docker/systemd deployments typically run from the repo
-// root) and then one level up (covers `cd services/api && go run ./cmd/api`
-// with a .env kept at the repo root). Missing files are not an error: in
-// production the environment is usually injected directly.
+// root) and then two levels up (covers `cd services/api && go run ./cmd/api`
+// with a .env kept at the repo root: services/api -> services -> repo root).
+// Missing files are not an error: in production the environment is usually
+// injected directly.
 func loadDotEnv() {
 	if err := godotenv.Load(".env"); err == nil {
 		return
 	}
-	if err := godotenv.Load("../.env"); err == nil {
+	if err := godotenv.Load("../../.env"); err == nil {
 		return
 	}
 	log.Println("no .env file found, relying on process environment")
